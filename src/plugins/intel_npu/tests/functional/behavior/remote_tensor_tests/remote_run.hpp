@@ -384,6 +384,58 @@ TEST_P(RemoteRunTests, CheckOutputDataFromTwoRunsInOutRemoteTensorsHostTensor2) 
               0);
 }
 
+TEST_P(RemoteRunTests, CheckOutputDataFromTwoRunsOneBigRemoteTensor) {
+    // Skip test according to plugin specific disabledTestPatterns() (if any)
+    SKIP_IF_CURRENT_TEST_IS_DISABLED()
+
+    ov::InferRequest inference_request;
+
+    static const std::size_t alignment = 4096;
+    std::size_t size = 0;
+
+    auto context = core->get_default_context(target_device).as<ov::intel_npu::level_zero::ZeroContext>();
+
+    OV_ASSERT_NO_THROW(compiled_model = core->compile_model(ov_model, target_device, configuration));
+    OV_ASSERT_NO_THROW(inference_request = compiled_model.create_infer_request());
+    auto in_tensor = inference_request.get_input_tensor();
+    auto out_tensor = inference_request.get_output_tensor();
+    const auto input_byte_size = in_tensor.get_byte_size();
+    const auto output_byte_size = out_tensor.get_byte_size();
+    auto input_shape = in_tensor.get_shape();
+    auto output_shape = out_tensor.get_shape();
+    in_tensor = {};
+    out_tensor = {};
+
+    auto input_byte_size_alligned = (input_byte_size + alignment - 1) & ~(alignment - 1);
+    auto output_byte_size_alligned = (output_byte_size + alignment - 1) & ~(alignment - 1);
+    size = input_byte_size_alligned + output_byte_size_alligned;
+
+    auto tensor_shape = Shape{1, size};
+
+    auto remote_tensor = context.create_l0_host_tensor(ov::element::f32, tensor_shape);
+    auto* input_mem_handle = remote_tensor.get();
+    auto* output_mem_handle = static_cast<unsigned char*>(remote_tensor.get()) + input_byte_size_alligned;
+
+    ov::Tensor input_tensor{ov::element::f32, input_shape, input_mem_handle};
+    ov::Tensor output_tensor{ov::element::f32, output_shape, output_mem_handle};
+
+    memset(remote_tensor.get(), 1, input_byte_size);
+    OV_ASSERT_NO_THROW(inference_request.set_input_tensor(input_tensor));
+    OV_ASSERT_NO_THROW(inference_request.set_output_tensor(output_tensor));
+    OV_ASSERT_NO_THROW(inference_request.infer());
+
+    auto l0_host_input_tensor = context.create_host_tensor(ov::element::f32, input_shape);
+    auto l0_host_output_tensor = context.create_host_tensor(ov::element::f32, output_shape);
+
+    memset(l0_host_input_tensor.data(), 1, input_byte_size);
+    OV_ASSERT_NO_THROW(inference_request.set_input_tensor(l0_host_input_tensor));
+    OV_ASSERT_NO_THROW(inference_request.set_output_tensor(l0_host_output_tensor));
+    OV_ASSERT_NO_THROW(inference_request.infer());
+
+    EXPECT_NE(output_mem_handle, l0_host_output_tensor.data());
+    EXPECT_EQ(memcmp(output_mem_handle, l0_host_output_tensor.data(), output_byte_size), 0);
+}
+
 }  // namespace behavior
 }  // namespace test
 }  // namespace ov
