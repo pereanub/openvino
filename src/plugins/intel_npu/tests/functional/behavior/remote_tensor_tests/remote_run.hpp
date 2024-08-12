@@ -390,7 +390,6 @@ TEST_P(RemoteRunTests, CheckOutputDataFromTwoRunsOneBigRemoteTensor) {
 
     ov::InferRequest inference_request;
 
-    static const std::size_t alignment = 4096;
     std::size_t size = 0;
 
     auto context = core->get_default_context(target_device).as<ov::intel_npu::level_zero::ZeroContext>();
@@ -406,15 +405,13 @@ TEST_P(RemoteRunTests, CheckOutputDataFromTwoRunsOneBigRemoteTensor) {
     in_tensor = {};
     out_tensor = {};
 
-    auto input_byte_size_alligned = (input_byte_size + alignment - 1) & ~(alignment - 1);
-    auto output_byte_size_alligned = (output_byte_size + alignment - 1) & ~(alignment - 1);
-    size = input_byte_size_alligned + output_byte_size_alligned;
+    size = input_byte_size + output_byte_size;
 
     auto tensor_shape = Shape{1, size};
 
     auto remote_tensor = context.create_l0_host_tensor(ov::element::f32, tensor_shape);
     auto* input_mem_handle = remote_tensor.get();
-    auto* output_mem_handle = static_cast<unsigned char*>(remote_tensor.get()) + input_byte_size_alligned;
+    auto* output_mem_handle = static_cast<unsigned char*>(remote_tensor.get()) + input_byte_size;
 
     ov::Tensor input_tensor{ov::element::f32, input_shape, input_mem_handle};
     ov::Tensor output_tensor{ov::element::f32, output_shape, output_mem_handle};
