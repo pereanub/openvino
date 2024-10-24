@@ -30,7 +30,6 @@ public:
     ov::device::PCIInfo getPciInfo() const override;
     std::map<ov::element::Type, float> getGops() const override;
     ov::device::Type getDeviceType() const override;
-    uint32_t getGroupOrdinal() const;
 
     std::shared_ptr<SyncInferRequest> createInferRequest(const std::shared_ptr<const ICompiledModel>& compiledModel,
                                                          const std::shared_ptr<IGraph>& graph,
@@ -70,8 +69,6 @@ private:
                                                       {ov::element::bf16, 0.f},
                                                       {ov::element::u8, 0.f},
                                                       {ov::element::i8, 0.f}};
-
-    uint32_t _group_ordinal;
 
     Logger log;
 };
