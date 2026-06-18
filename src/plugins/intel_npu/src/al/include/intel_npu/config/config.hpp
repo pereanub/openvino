@@ -371,29 +371,100 @@ private:
 
 namespace details {
 
-struct OptionConcept final {
-    std::string_view (*key)() = nullptr;
-    std::string_view (*envVar)() = nullptr;
-    OptionMode (*mode)() = nullptr;
-    bool (*isPublic)() = nullptr;
-    ov::PropertyMutability (*mutability)() = nullptr;
-    uint32_t (*compilerSupportVersion)() = nullptr;
-    bool (*isValueSupportedImpl)(std::string_view val) =
-        nullptr;  // better make this private, but won't be able to use aggregate initialization anymore in
-                  // "makeOptionModel"
-    std::shared_ptr<OptionValue> (*validateAndParseFromString)(std::string_view val) = nullptr;
-    std::shared_ptr<OptionValue> (*validateAndParseFromAny)(const ov::Any& val) = nullptr;
-    std::optional<std::function<bool(std::string_view)>> customValueCheckerOpt = std::nullopt;
-    bool isValueSupported(std::string_view val) {
-        if (customValueCheckerOpt.has_value()) {
-            return customValueCheckerOpt.value()(val);
-        }
-        return isValueSupportedImpl(val);
+// OptionValue implementation for dynamically-registered (C-API) options.
+// Stores and serializes the option value as a plain std::string.
+class DynamicStringOptionValue final : public OptionValue {
+public:
+    explicit DynamicStringOptionValue(std::string val) : _val(std::move(val)) {}
+
+    std::string_view getTypeName() const override {
+        return "std::string";
     }
+
+    std::string toString() const override {
+        return _val;
+    }
+
+    const std::string& getValue() const {
+        return _val;
+    }
+
+private:
+    std::string _val;
+};
+
+// OptionConcept holds the type-erased metadata and parse/validate callbacks for a single option.
+// Previously a raw-function-pointer struct; now a proper class whose accessor names are identical,
+// so all existing call sites (opt.key(), opt.mode(), opt.validateAndParseFromString(), ...)
+// compile without any changes.
+class OptionConcept final {
+public:
+    OptionConcept() = default;
+
+    OptionConcept(std::string key,
+                  std::string envVar,
+                  OptionMode mode,
+                  bool isPublic,
+                  ov::PropertyMutability mutability,
+                  uint32_t compilerSupportVersion,
+                  std::function<bool(std::string_view)> isValueSupported,
+                  std::function<std::shared_ptr<OptionValue>(std::string_view)> parseFromString,
+                  std::function<std::shared_ptr<OptionValue>(const ov::Any&)> parseFromAny)
+        : _key(std::move(key)),
+          _envVar(std::move(envVar)),
+          _mode(mode),
+          _isPublic(isPublic),
+          _mutability(mutability),
+          _compilerSupportVersion(compilerSupportVersion),
+          _isValueSupported(std::move(isValueSupported)),
+          _parseFromString(std::move(parseFromString)),
+          _parseFromAny(std::move(parseFromAny)) {}
+
+    std::string_view key() const {
+        return _key;
+    }
+    std::string_view envVar() const {
+        return _envVar;
+    }
+    OptionMode mode() const {
+        return _mode;
+    }
+    bool isPublic() const {
+        return _isPublic;
+    }
+    ov::PropertyMutability mutability() const {
+        return _mutability;
+    }
+    uint32_t compilerSupportVersion() const {
+        return _compilerSupportVersion;
+    }
+
+    bool isValueSupported(std::string_view val) const {
+        return _isValueSupported ? _isValueSupported(val) : false;
+    }
+
+    std::shared_ptr<OptionValue> validateAndParseFromString(std::string_view val) const {
+        return _parseFromString ? _parseFromString(val) : nullptr;
+    }
+
+    std::shared_ptr<OptionValue> validateAndParseFromAny(const ov::Any& val) const {
+        return _parseFromAny ? _parseFromAny(val) : nullptr;
+    }
+
+private:
+    std::string _key;
+    std::string _envVar;
+    OptionMode _mode = OptionMode::Both;
+    bool _isPublic = false;
+    ov::PropertyMutability _mutability = ov::PropertyMutability::RW;
+    uint32_t _compilerSupportVersion = ONEAPI_MAKE_VERSION(7, 23);
+    std::function<bool(std::string_view)> _isValueSupported;
+    std::function<std::shared_ptr<OptionValue>(std::string_view)> _parseFromString;
+    std::function<std::shared_ptr<OptionValue>(const ov::Any&)> _parseFromAny;
 };
 
 template <class Opt>
-std::shared_ptr<OptionValue> validateAndParseFromString(std::string_view val) {
+std::shared_ptr<OptionValue> validateAndParseFromStringImpl(std::string_view val) {
     using ValueType = typename Opt::ValueType;
 
     try {
@@ -406,7 +477,7 @@ std::shared_ptr<OptionValue> validateAndParseFromString(std::string_view val) {
 }
 
 template <class Opt>
-std::shared_ptr<OptionValue> validateAndParseFromAny(const ov::Any& val) {
+std::shared_ptr<OptionValue> validateAndParseFromAnyImpl(const ov::Any& val) {
     using ValueType = typename Opt::ValueType;
 
     try {
@@ -421,19 +492,49 @@ std::shared_ptr<OptionValue> validateAndParseFromAny(const ov::Any& val) {
 template <class Opt>
 OptionConcept makeOptionModel(
     std::optional<std::function<bool(std::string_view)>> customValueCheckerOpt = std::nullopt) {
-    return {&Opt::key,
-            &Opt::envVar,
-            &Opt::mode,
-            &Opt::isPublic,
-            &Opt::mutability,
-            &Opt::compilerSupportVersion,
-            &Opt::isValueSupported,
-            &validateAndParseFromString<Opt>,
-            &validateAndParseFromAny<Opt>,
-            std::move(customValueCheckerOpt)};
+    std::function<bool(std::string_view)> isValueSupportedFn =
+        customValueCheckerOpt.has_value() ? customValueCheckerOpt.value()
+                                          : std::function<bool(std::string_view)>(&Opt::isValueSupported);
+    return OptionConcept(std::string(Opt::key()),
+                         std::string(Opt::envVar()),
+                         Opt::mode(),
+                         Opt::isPublic(),
+                         Opt::mutability(),
+                         Opt::compilerSupportVersion(),
+                         std::move(isValueSupportedFn),
+                         &validateAndParseFromStringImpl<Opt>,
+                         &validateAndParseFromAnyImpl<Opt>);
 }
 
 }  // namespace details
+
+//
+// NpuOptionDesc_C — C-ABI-compatible option descriptor
+//
+// All fields use C-safe types (const char*, int, bare function pointers with no captures)
+// so this struct can be defined in a plain C header and passed across a C API boundary.
+// Register with OptionsDesc::addDynamic(). The option value is always stored as std::string.
+//
+
+struct NpuOptionDesc_C {
+    const char* key = nullptr;                      ///< Option key, e.g. "NPU_MY_OPTION". Must outlive the OptionsDesc.
+    const char* envVar = nullptr;                   ///< Environment variable name, or nullptr.
+    int mode = static_cast<int>(OptionMode::Both);  ///< Cast of OptionMode.
+    int isPublic = 0;                               ///< Non-zero if appears in supported_properties.
+    int mutability = static_cast<int>(ov::PropertyMutability::RW);  ///< Cast of ov::PropertyMutability.
+    uint32_t compilerSupportVersion = ONEAPI_MAKE_VERSION(0, 0);
+
+    /// Optional value conversion hook.
+    /// If provided, it receives the raw input value and must return a pointer to a
+    /// null-terminated string representation. Returned pointer must remain valid
+    /// until the function returns. The converted value is copied immediately.
+    const char* (*to_parse)(const char* val) = nullptr;
+
+    /// Validates the string representation of a candidate value.
+    /// Returns 0 on success, non-zero if the value is rejected.
+    /// May be nullptr — any string is then accepted.
+    int (*parseAndValidate)(const char* val) = nullptr;
+};
 
 //
 // OptionsDesc
@@ -443,6 +544,11 @@ class OptionsDesc final {
 public:
     template <class Opt>
     void add(std::optional<std::function<bool(std::string_view)>> customValueCheckerOpt = std::nullopt);
+
+    /// Register an option described by a C-ABI-compatible descriptor.
+    /// The option value is stored and compared as std::string; parseAndValidate() is used
+    /// for validation on set. The key string must remain valid for the lifetime of this OptionsDesc.
+    void addDynamic(const NpuOptionDesc_C& desc);
 
     bool has(std::string_view key) const;
 

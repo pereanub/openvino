@@ -1609,4 +1609,48 @@ struct COMPATIBILITY_CHECK final : OptionBase<COMPATIBILITY_CHECK, ov::Compatibi
     }
 };
 
+// =============================================================================
+// Example: registering a C-API-defined option with addDynamic()
+//
+// Step 1 — define a plain validate function (no captures, C-linkage compatible):
+//
+//   static int my_priority_validate(const char* val) {
+//       if (!val) return -1;
+//       return (strcmp(val, "LOW") == 0 ||
+//               strcmp(val, "MEDIUM") == 0 ||
+//               strcmp(val, "HIGH") == 0) ? 0 : -1;
+//   }
+//
+//   static const char* my_priority_to_parse(const char* val) {
+//       // Example conversion: alias "MID" to canonical "MEDIUM"
+//       if (val && strcmp(val, "MID") == 0) {
+//           return "MEDIUM";
+//       }
+//       return val;
+//   }
+//
+// Step 2 — declare the descriptor (can live in a plain .h, no C++ headers needed):
+//
+//   static const NpuOptionDesc_C MY_C_PRIORITY_DESC = {
+//       /* key                  */ "NPU_MY_C_PRIORITY",
+//       /* envVar               */ "OV_NPU_MY_C_PRIORITY",
+//       /* mode                 */ static_cast<int>(OptionMode::RunTime),
+//       /* isPublic             */ 1,
+//       /* mutability           */ static_cast<int>(ov::PropertyMutability::RW),
+//       /* compilerSupportVer   */ ONEAPI_MAKE_VERSION(0, 0),
+//       /* to_parse             */ my_priority_to_parse,
+//       /* parseAndValidate     */ my_priority_validate,
+//   };
+//
+// Step 3 — register inside IEngineBackend::registerOptions() (or any place with OptionsDesc&):
+//
+//   void MyBackend::registerOptions(OptionsDesc& options) const override {
+//       options.addDynamic(MY_C_PRIORITY_DESC);
+//   }
+//
+// After registration the option behaves like any other: it participates in
+// FilteredConfig::enable/update, parseEnvVars, getSupportedOptions, and
+// toStringForCompiler. Its value is stored and returned as std::string.
+// =============================================================================
+
 }  // namespace intel_npu

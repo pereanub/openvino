@@ -228,6 +228,66 @@ void OptionsDesc::walk(std::function<void(const details::OptionConcept&)> cb) co
     }
 }
 
+void OptionsDesc::addDynamic(const NpuOptionDesc_C& desc) {
+    OPENVINO_ASSERT(desc.key != nullptr, "addDynamic: option key must not be null");
+    OPENVINO_ASSERT(_impl.count(desc.key) == 0, "Option '", desc.key, "' was already registered");
+
+    // Capture only plain function pointers and the key string — both are C-safe.
+    const auto toParseFn = desc.to_parse;
+    const auto validateFn = desc.parseAndValidate;
+    const std::string key{desc.key};
+
+    auto normalizeValue = [toParseFn, key](std::string_view val) -> std::string {
+        std::string rawValue(val);
+        if (!toParseFn) {
+            return rawValue;
+        }
+
+        const char* converted = toParseFn(rawValue.c_str());
+        OPENVINO_ASSERT(converted != nullptr,
+                        "Failed to parse '",
+                        key,
+                        "' option: to_parse returned null for value '",
+                        rawValue,
+                        "'");
+        return std::string(converted);
+    };
+
+    auto parseFromString =
+        [normalizeValue, validateFn, key](std::string_view val) -> std::shared_ptr<details::OptionValue> {
+        std::string parsedValue = normalizeValue(val);
+        if (validateFn && validateFn(parsedValue.c_str()) != 0) {
+            OPENVINO_THROW("Failed to parse '", key, "' option: invalid value '", parsedValue, "'");
+        }
+        return std::make_shared<details::DynamicStringOptionValue>(std::move(parsedValue));
+    };
+
+    auto parseFromAny = [normalizeValue, validateFn, key](const ov::Any& val) -> std::shared_ptr<details::OptionValue> {
+        const std::string rawValue = val.as<std::string>();
+        std::string parsedValue = normalizeValue(rawValue);
+        if (validateFn && validateFn(parsedValue.c_str()) != 0) {
+            OPENVINO_THROW("Failed to parse '", key, "' option: invalid value '", parsedValue, "'");
+        }
+        return std::make_shared<details::DynamicStringOptionValue>(std::move(parsedValue));
+    };
+
+    auto isValueSupportedFn = [normalizeValue, validateFn](std::string_view val) -> bool {
+        const std::string parsedValue = normalizeValue(val);
+        return !validateFn || validateFn(parsedValue.c_str()) == 0;
+    };
+
+    _impl.emplace(desc.key,
+                  details::OptionConcept(desc.key,
+                                         desc.envVar ? desc.envVar : "",
+                                         static_cast<OptionMode>(desc.mode),
+                                         desc.isPublic != 0,
+                                         static_cast<ov::PropertyMutability>(desc.mutability),
+                                         desc.compilerSupportVersion,
+                                         std::move(isValueSupportedFn),
+                                         std::move(parseFromString),
+                                         std::move(parseFromAny)));
+}
+
 //
 // Config
 //
